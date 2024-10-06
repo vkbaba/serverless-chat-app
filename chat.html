@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chat App</title>
+    <style>
+        body {
+            max-width: 500px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        h1 {
+            text-align: center;
+        }
+        #chatContainer {
+            display: none;
+        }
+        #messages {
+            height: 300px;
+            border: 1px solid #ccc;
+            overflow-y: scroll;
+            margin-bottom: 10px;
+            padding: 10px;
+        }
+        #joinButton, #sendButton {
+            white-space: nowrap;
+        }
+        #messageInput, #roomIdInput {
+            width: 100%;
+        }
+        button {
+            margin-left : 10px;
+        }
+        #joinContainer, #sendMessageContainer {
+            display: flex;
+            margin-bottom: 10px;
+        }
+    </style>
+</head>
+<body>
+    <h1>WebSocket チャットアプリ</h1>
+    <div id="joinContainer">
+        <input type="text" id="roomIdInput" placeholder="Room IDを入力(オプション)">
+        <button id="joinButton">参加</button>
+    </div>
+    <div id="chatContainer">
+        <div id="messages"></div>
+        <div id="sendMessageContainer">
+            <input type="text" id="messageInput" placeholder="メッセージを入力">
+            <button id="sendButton">送信</button>            
+        </div>
+    </div>
+
+    <script>
+        const joinButton = document.getElementById("joinButton");
+        const roomIdInput = document.getElementById("roomIdInput");
+        const chatContainer = document.getElementById("chatContainer");
+        const messages = document.getElementById("messages");
+        const messageInput = document.getElementById("messageInput");
+        const sendButton = document.getElementById("sendButton");
+
+        let socket;
+
+        joinButton.addEventListener("click", () => {
+            const roomId = roomIdInput.value.trim();
+            joinButton.disabled = true;
+            roomIdInput.disabled = true;
+            socket = new WebSocket("WEBSOCKET_URL"); 
+
+            socket.onopen = () => {
+                socket.send(JSON.stringify({ action: "joinRoom", roomId: roomId }));
+                chatContainer.style.display = "block";
+            };
+
+            socket.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                switch (data.type) {
+                    case "createRoom":
+                        addMessage("チャットルーム(ID: " + data.roomId + ")を作成しました");
+                        break;
+                    case "joinRoom":
+                        addMessage("チャットルーム(ID: " + data.roomId + ")に参加しました");
+                        break;
+                    case "sendMessage":
+                        addMessage(data.message);
+                        break;
+                    case "disconnect":
+                        addMessage("チャットルームから退出しました");
+                        break;
+                    case "error":
+                        addMessage("エラーが発生しました: " + data.message);
+                        break;
+                }
+            };
+
+            socket.onerror = (error) => {
+                addMessage("エラーが発生しました: " + error.message);
+            };
+
+            socket.onclose = () => {
+                addMessage("Websocket接続が閉じられました");
+                joinButton.disabled = false;
+            };
+        });
+
+        sendButton.addEventListener("click", sendMessage);
+        messageInput.addEventListener("keypress", (e) => {
+            if (e.key === "Enter") {
+                sendMessage();
+            }
+        });
+
+        function sendMessage() {
+            const message = messageInput.value;
+            addMessage(message);
+            if (message && socket.readyState === WebSocket.OPEN) {
+                socket.send(JSON.stringify({ action: "sendMessage", message: messageInput.value }));
+                messageInput.value = "";
+            }
+        }
+
+        function addMessage(message) {
+            const messageElement = document.createElement("div");
+            messageElement.textContent = message;
+            messages.appendChild(messageElement);
+            messages.scrollTop = messages.scrollHeight;
+        }
+
+    </script>
+</body>
+</html>
