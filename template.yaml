@@ -1,0 +1,207 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: "AWS::Serverless-2016-10-31"
+Description: "SAM template for ChatApp"
+
+Globals:
+  Function:
+    Timeout: 3
+    CodeUri: chat_app/
+    MemorySize: 256
+    Runtime: python3.11
+    Environment:
+      Variables:
+        TableName: !Ref ChatAppData
+        endpointurl: !Sub "https://${ChatAppAPI}.execute-api.${AWS::Region}.amazonaws.com/${ChatAppAPIStage}"
+
+Resources:
+  # DynamoDB 
+  ChatAppData:
+    Type: "AWS::DynamoDB::Table"
+    Properties:
+      TableName: ChatAppData
+      AttributeDefinitions:
+        - AttributeName: connectionId
+          AttributeType: S
+        - AttributeName: roomId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: connectionId
+          KeyType: HASH
+        - AttributeName: roomId
+          KeyType: RANGE
+      BillingMode: PAY_PER_REQUEST
+      GlobalSecondaryIndexes:
+        - IndexName: roomId-index
+          KeySchema:
+            - AttributeName: roomId
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+      SSESpecification:
+        SSEEnabled: true
+
+  # API Gateway
+  ChatAppAPI:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: ChatAppAPI
+      ProtocolType: WEBSOCKET
+      RouteSelectionExpression: "$request.body.action"
+
+  # API Gateway Stage 
+  # ステージはAPI Gatewayのリソースをデプロイするための環境
+  # https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-apigatewayv2-stage.html
+  ChatAppAPIStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      StageName: production
+      Description: Production Stage
+      AutoDeploy: true
+      ApiId: !Ref ChatAppAPI
+
+  # API Gateway Route
+  # ルートはAPI Gateway のエンドポイント
+  # https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-apigatewayv2-route.html
+  # チャットルームへの参加
+  joinRoomRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref ChatAppAPI
+      RouteKey: joinRoom
+      AuthorizationType: NONE
+      OperationName: joinRoomRoute
+      Target: !Sub integrations/${joinRoomIntegration}
+  
+  # API Gateway Integration
+  # API Gateway とバックエンドの間の通信を処理 ここではLambda 関数(AWS_PROXY)を指定
+  # https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-apigatewayv2-integration.html
+  joinRoomIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref ChatAppAPI
+      Description: Join Integration
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${joinRoom.Arn}/invocations"
+
+  # メッセージの送信
+  sendMessageRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref ChatAppAPI
+      RouteKey: sendMessage
+      AuthorizationType: NONE
+      OperationName: sendMessageRoute
+      Target: !Sub integrations/${sendMessageIntegration}
+
+  sendMessageIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref ChatAppAPI
+      Description: Send Message Integration
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${sendMessage.Arn}/invocations"
+
+  # チャットルームからの退出
+  disconnectRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref ChatAppAPI
+      RouteKey: $disconnect
+      AuthorizationType: NONE
+      OperationName: disconnectRoute
+      Target: !Sub integrations/${disconnectIntegration}
+  
+  disconnectIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref ChatAppAPI
+      Description: Disconnect Integration
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${disconnect.Arn}/invocations"
+
+  # Lambda Functions
+  joinRoom:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: joinRoom.lambda_handler
+      Role: !GetAtt ChatAppRole.Arn
+
+  sendMessage:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: sendMessage.lambda_handler
+      Role: !GetAtt ChatAppRole.Arn
+
+  disconnect:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: disconnect.lambda_handler
+      Role: !GetAtt ChatAppRole.Arn
+
+  # Log Group 
+  # 明示して作成しないとログが無期限保存される
+  joinRoomLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${joinRoom}
+      RetentionInDays: 7
+  
+  sendMessageLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${sendMessage}
+      RetentionInDays: 7
+
+  disconnectLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${disconnect}
+      RetentionInDays: 7
+
+  # IAM Role
+  # Lambda がAPI Gateway, DynamoDB, CloudWatch にアクセスするためのロール
+  ChatAppRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      RoleName: ChatAppRole
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: "sts:AssumeRole"
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess"  
+        - "arn:aws:iam::aws:policy/AmazonAPIGatewayInvokeFullAccess"
+        - "arn:aws:iam::aws:policy/CloudWatchLogsFullAccess" 
+
+  # Permissions
+  # API Gateway が特定のLambda 関数を呼び出す権限
+  joinRoomLambdaPermissionForAPI:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt joinRoom.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ChatAppAPI}/*/joinRoom"
+
+  sendMessageLambdaPermissionForAPI:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt sendMessage.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ChatAppAPI}/*/sendMessage"
+
+  disconnectLambdaPermissionForAPI:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt disconnect.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ChatAppAPI}/*/$disconnect"
+
+Outputs:
+  WebSocketURL:
+    Value : !Sub "wss://${ChatAppAPI}.execute-api.${AWS::Region}.amazonaws.com/${ChatAppAPIStage}"
